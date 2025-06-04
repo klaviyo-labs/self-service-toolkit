@@ -1,0 +1,268 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta charset="utf-8">
+    <title>CSV Header Remapper</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.6/dist/css/bootstrap.min.css" rel="stylesheet"
+        integrity="sha384-4Q6Gf2aSP4eDXB8Miphtr37CMZZQ5oXLH2yaXMJ2w8e2ZtHTl7GptT4jmndRuHDT" crossorigin="anonymous">
+</head>
+
+<body>
+    <div class="col-lg-8 mx-auto p-4">
+        <header class="d-flex align-items-center pb-3 mb-3 border-bottom">
+            <h1>CSV Header Remapper</h1>
+        </header>
+        <main id="main">
+            <p class="fs-6">This allows you to rename the first row of a CSV file. This is helpful if you have a large
+                CSV file that you can't easily open, and you just need to rename the column headers to remap data. This
+                reads the first row, and creates a form for renaming the file headers. Optionally, you can choose to add
+                a new column. This will add a static value to all rows in that new column. This is useful if you need to
+                add a List ID or Event Name to all lines.</p>
+
+            <p class="fs-6">After clicking "Change Headers", you need to choose where to save the newly created file. It
+                can handle extremely large files.</p>
+
+
+            <p class="fs-6"></p>This
+            entirely happens in your browser with JavaScript - nothing is uploaded to any remote servers.
+            Please <a
+                href="https://github.com/klaviyo-labs/self-service-toolkit/blob/main/tools/csv-header-remapping.html"
+                target="_blank">see the source code for yourself</a>. Feel free to run locally and modify as needed.</p>
+
+            <hr />
+
+
+            <form>
+                <div class="mb-3 form-check">
+                    <input type="checkbox" class="form-check-input" id="addColumn" name="addColumn">
+                    <label class="form-check-label" for="addColumn">Add a column</label>
+                </div>
+                <div class="mb-3 form-check">
+                    <input type="checkbox" class="form-check-input" id="prePopulateWithExisting"
+                        name="prePopulateWithExisting">
+                    <label class="form-check-label" for="prePopulateWithExisting">Load existing headers</label>
+                </div>
+
+                <div class="mb-3 input-group">
+                    <input type="file" name="csvFile" id="csvFile" class="form-control" accept=".csv">
+                </div>
+            </form>
+
+            <form id="mapping">
+            </form>
+
+            <div class="p-3 rounded text-body-emphasis bg-body-secondary" style="display: none" id="log">
+            </div>
+        </main>
+
+
+    </div>
+
+
+
+    <script>
+        const chunkSize = 1024 * 1024; // 1MB chunks (adjust as needed)
+        let file;
+        let newColumn;
+        let newValue;
+        let cr;
+
+        async function processAndSaveCSV(file) {
+            const logSection = document.getElementById("log");
+            let completeEl = document.createElement("p");
+            let progressEl = document.createElement("p");
+            let percentage = 0.00;
+
+            try {
+                const fileHandle = await window.showSaveFilePicker({
+                    suggestedName: `${file.name.split(".")[0]}_renamed_headers.csv`,
+                    types: [{ description: 'CSV files', accept: { 'text/csv': ['.csv'] } }],
+                    startIn: "desktop"
+                });
+
+                const writableStream = await fileHandle.createWritable();
+                let offset = 0;
+                document.getElementById("log").style.display = "block";
+                progressEl.textContent = `${percentage} complete`;
+                logSection.appendChild(progressEl);
+                while (offset < file.size) {
+
+                    const slice = file.slice(offset, offset + chunkSize);
+                    const chunkText = await new Promise((resolve, reject) => {
+                        const reader = new FileReader();
+                        reader.onload = (event) => resolve(event.target.result);
+                        reader.onerror = reject;
+                        reader.readAsText(slice);
+                    });
+
+                    let lastCr = chunkText.lastIndexOf(cr);
+                    const newChunk = chunkText.substr(0, lastCr);
+                    let setback = chunkText.length - lastCr
+
+                    // Process the chunk (e.g., modify data, filter rows)
+                    const processedChunk = processCSVChunk(newChunk, offset);
+                    percentage = (100 * (offset / file.size)).toFixed(2);
+                    progressEl.textContent = `${percentage} complete`;
+                    // Write the processed chunk to the writable stream
+                    await writableStream.write(processedChunk);
+
+                    offset += chunkSize - setback + cr.length;
+                }
+
+                progressEl.textContent = `Saving.`;
+                await writableStream.close();
+
+                completeEl.textContent = "CSV saved.";
+                logSection.appendChild(completeEl);
+
+            } catch (error) {
+                console.error('Error processing and saving CSV:', error);
+                completeEl.textContent = "Error processing and saving - see console.";
+                logSection.appendChild(completeEl);
+            }
+        }
+
+        function processCSVChunk(chunkText, offset) {
+            let newChunk = "";
+            if (offset === 0) {
+                // First row, change headers
+                let [lines, cr] = getLines(chunkText);
+                newHeaders = getNewHeaders();
+                lines.shift();
+                if (newValue) {
+                    lines = appendNewValue(lines, newValue);
+                }
+                lines.unshift(newHeaders)
+                newChunk = lines.join(cr);
+            } else {
+                if (newValue) {
+                    let [lines, cr] = getLines(chunkText);
+                    lines = appendNewValue(lines, newValue);
+                    newChunk = lines.join(cr);
+                } else {
+                    newChunk = chunkText;
+                }
+            }
+            return newChunk + cr;
+        }
+
+        function appendNewValue(lines, value) {
+            lines.forEach(function (line, index) {
+                lines[index] = line + "," + value;
+            }, lines);
+            return lines;
+        }
+
+        function getLines(chunkText) {
+            if (chunkText.split('\r\n').length === 1) {
+                lines = chunkText.split('\n');
+                cr = '\n';
+            } else {
+                lines = chunkText.split('\r\n')
+                cr = '\r\n';
+            }
+            return [lines, cr]
+        }
+
+        function loadHeaders(file) {
+            // Read first chunkSize of file looking for header row.
+            const slice = file.slice(0, chunkSize);
+            const reader = new FileReader();
+            let header;
+            reader.readAsText(slice);
+
+            reader.onload = function (event) {
+                const chunkText = event.target.result;
+                let [lines, cr] = getLines(chunkText);
+
+                headers = lines[0].split(",");
+                createMapper(headers);
+            }
+        }
+
+        function createMapper(headers) {
+            const mapperDest = document.getElementById('mapping');
+            const submitButton = '<button type="button" class="btn btn-primary mb-3" id="changeHeaders">Change Headers</button>'
+
+            mapperDest.innerHTML += "<h2>Headers</h2>";
+
+            if (document.getElementById("addColumn").checked) {
+                let newColumn = true;
+                headers = headers.concat(['New Column Title', 'New Column Value'])
+            }
+            headers.forEach(element => {
+                if (element == 'New Column Title') {
+                    mapperDest.appendChild(document.createElement("hr"));
+                }
+                if (document.getElementById("prePopulateWithExisting").checked) {
+                    rowString = `<div class="mb-3 row"><label for="${element}" class="form-label col-sm-4 col-form-label">${element}:</label><div class="col-sm-8"><input type="text" name="${element}" class="form-control" value="${element}"></div></div>`;
+                } else {
+                    rowString = `<div class="mb-3 row"><label for="${element}" class="form-label col-sm-4 col-form-label">${element}:</label><div class="col-sm-8"><input type="text" name="${element}" class="form-control"></div></div>`;
+                }
+
+                mapperDest.innerHTML += rowString;
+            });
+
+            mapperDest.innerHTML += submitButton;
+
+            document.getElementById('changeHeaders').addEventListener('click', async (event) => {
+                await processAndSaveCSV(file);
+            });
+        }
+
+        function getNewHeaders() {
+            let newHeaders = [];
+            document.getElementById("mapping").querySelectorAll("input").forEach(element => {
+                if (element.name != "New Column Value") {
+                    newHeaders.push(element.value);
+                } else {
+                    newValue = element.value;
+                }
+            });
+            return newHeaders.join(",");
+        }
+
+        function isNonChromium() {
+            // Check for common Chromium-based browser identifiers
+            const userAgent = navigator.userAgent;
+
+            // Common Chromium-based browser strings:
+            const chromiumStrings = [
+                "Chrome",
+                "Chromium",
+                "Edg", // Edge
+                "Opera",
+                "OPR", // Opera
+                "Vivaldi",
+                "SamsungBrowser",
+                "Silk", // Amazon Silk
+                "Electron", // Electron apps
+                "wv", // Android WebView
+                "Yandex", // Yandex Browser
+            ];
+
+            // Check if any of the chromium strings are present.
+            const isChromium = chromiumStrings.some((str) => userAgent.indexOf(str) !== -1);
+            return !isChromium;
+        }
+
+        document.getElementById('csvFile').addEventListener('change', async (event) => {
+            file = event.target.files[0];
+            if (file) {
+                document.getElementById("mapping").innerHTML = "";
+                loadHeaders(file);
+            }
+        });
+
+        window.addEventListener('load', (event) => {
+            if (isNonChromium()) {
+                document.getElementById("main").innerHTML = '<div class="alert alert-danger" role="alert">Whoops! This tool is currently only supported on Chrome-based browsers.</div>';
+            }
+        });
+
+    </script>
+</body>
+
+</html>
