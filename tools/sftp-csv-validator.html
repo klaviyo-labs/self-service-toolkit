@@ -28,8 +28,10 @@
             <ul>
                 <li>Presence of a required identifier (email, phone number or External ID).</li>
                 <li>Validity of email or phone formatting.</li>
-                <li>Presence of required headers for event imports.</li>
+                <li>Presence of required headers for event imports or profile imports.</li>
                 <li>Valid timestamp formatting for event imports.</li>
+                <li>Valid consent strings.</li>
+                <li>Valid consent timestamp formatting.</li>
             </ul>
 
             <p>Select a file type (required). Optionally, choose to save line-level validation errors to an output file. Header errors and row numbers for rows with issues will be displayed on this page.</p>
@@ -88,6 +90,9 @@
         const EVENT_IDENTIFIERS_HEADERS = ['PROFILE.EMAIL', 'PROFILE.PHONENUMBER', 'PROFILE.EXTERNALID'];
         const EVENT_REQUIRED_HEADERS = ['METRIC NAME', 'TIME'];
         const PROFILE_IDENTIFIER_HEADERS = ['EMAIL', 'PHONENUMBER', 'EXTERNALID'];
+        const CONSENT_HEADERS = ["EMAIL MARKETING CONSENT", "SMS MARKETING CONSENT", "SMS TRANSACTIONAL CONSENT"];
+        const CONSENT_TIMESTAMP_HEADERS = CONSENT_HEADERS.map((header) => `${header} TIMESTAMP`);
+        const CONSENT_VALUES = ["SUBSCRIBE", "UNSUBSCRIBED", "NEVER SUBSCRIBED"]
 
         /**
          * Appends a message to the results area with appropriate Bootstrap alert styling.
@@ -223,15 +228,15 @@
                         readerList.forEach(async(row, index) => {
                             const timeValue = row['TIME'];
                             if (timeValue === undefined || timeValue === null || timeValue.trim() === '' || !validateTime(timeValue)) {
-                                invalidTimeRows.push(index + 1);
+                                invalidTimeRows.push(index + 2);
                                 if(saveOutput){
-                                    await writableStream.write(makeRow([index, "Invalid time format", timeValue]));
+                                    await writableStream.write(makeRow([index + 2, "Invalid time format", timeValue]));
                                 }
                             }
                         });
                         if (invalidTimeRows.length > 0) {
                             if (invalidTimeRows.length === readerList.length) {
-                                logMessage('All rows have an invalid time format in column TIME', 'success');
+                                logMessage('All rows have an invalid time format in column TIME', 'error');
                             } else {
                                 logMessage(`Invalid time in the following rows: ${invalidTimeRows.join(', ')} (column TIME)`, 'error');
                             }
@@ -243,16 +248,73 @@
                         }
 
                     } else if (fileType === 'profiles') {
+                        let hasConsentHeaders = false;
+                        let hasConsentHeadersTimestamp = false;
+
                         if (!PROFILE_IDENTIFIER_HEADERS.some(item => readerFieldnames.includes(item))) {
                             missingIdentifiers = true;
                         }
-
                         if (missingIdentifiers) {
                             logMessage(`Missing one of the following identifier columns: ${PROFILE_IDENTIFIER_HEADERS.join(', ')}`, 'error');
                             validationPassed = false;
                         } else {
                              logMessage('Required profile identifiers are present.', 'success');
                         }
+
+                        if (CONSENT_HEADERS.some(item => readerFieldnames.includes(item))) {
+                            hasConsentHeaders = true;
+                        }
+                        if (CONSENT_TIMESTAMP_HEADERS.some(item => readerFieldnames.includes(item))) {
+                            hasConsentHeadersTimestamp = true;
+                        }
+                        const invalidConsentValueRows = [];
+                        const invalidConsentTimestampRows = [];
+                        if (hasConsentHeaders || hasConsentHeadersTimestamp){
+                            readerList.forEach(async(row, index) => {
+                                
+                                let consentValues = CONSENT_HEADERS.map(key => {
+                                    return row.hasOwnProperty(key) ? row[key] : "";
+                                });
+                                consentValues = consentValues.filter(n => n);
+                                if (!consentValues.every(async item => CONSENT_VALUES.includes(item))){
+                                    invalidConsentValueRows.push(index + 2);
+                                    if(saveOutput){
+                                        await writableStream.write(makeRow([index + 2, "Invalid consent value"]));
+                                    } 
+                                }
+                                
+                                let consentTimestamps = CONSENT_TIMESTAMP_HEADERS.map(key => {
+                                    return row.hasOwnProperty(key) ? row[key] : "";
+                                });
+                                consentTimestamps = consentTimestamps.filter(n => n);
+                                consentTimestamps.forEach(async (timeValue) => {
+                                    if (!validateTime(timeValue)){
+                                        invalidConsentTimestampRows.push(index + 2);
+                                        if(saveOutput){
+                                            await writableStream.write(makeRow([index + 2, "Invalid consent timestamp format", timeValue]));
+                                        } 
+                                    }
+                                });
+                            });
+                        }
+
+                        if (invalidConsentValueRows.length > 0) {
+                            if (invalidConsentValueRows.length === readerList.length) {
+                                logMessage('All rows have an invalid consent value', 'error');
+                            } else {
+                                logMessage(`Invalid consent value(s) in the following rows: ${invalidConsentValueRows.join(', ')}`, 'error');
+                            }
+                            validationPassed = false;
+                        }
+                        if (invalidConsentTimestampRows.length > 0) {
+                            if (invalidConsentTimestampRows.length === readerList.length) {
+                                logMessage('All rows have an invalid consent timestamp format', 'error');
+                            } else {
+                                logMessage(`Invalid consent timestamp formats in the following rows: ${invalidConsentValueRows.join(', ')}`, 'error');
+                            }
+                            validationPassed = false;
+                        }
+
                     }
 
                     let emailHeader = null;
@@ -267,9 +329,9 @@
                             if (email && email.trim() !== '') {
                                 processedEmailCount++;
                                 if (!validateEmail(email)) {
-                                    invalidEmailRows.push(index + 1);
+                                    invalidEmailRows.push(index + 2);
                                     if(saveOutput){
-                                        writableStream.write(makeRow([index, "Invalid email", email]));
+                                        writableStream.write(makeRow([index + 2, "Invalid email", email]));
                                     }
                                 }
                             }
@@ -307,24 +369,24 @@
                                 try {
                                     parsedNumber = libphonenumber.parsePhoneNumberFromString(phoneNumberStr);
                                 } catch (e) {
-                                    invalidPhoneRows.push(index + 1);
+                                    invalidPhoneRows.push(index + 2);
                                     if(saveOutput){
-                                        writableStream.write(makeRow([index, "Invalid phone number", phoneNumberStr]));
+                                        writableStream.write(makeRow([index + 2, "Invalid phone number", phoneNumberStr]));
                                     }
                                     return; 
                                 }
 
                                 if (parsedNumber) {
                                     if (!parsedNumber.isValid()) {
-                                        invalidPhoneRows.push(index + 1);
+                                        invalidPhoneRows.push(index + 2);
                                         if(saveOutput){
-                                            writableStream.write(makeRow([index, "Invalid phone number", phoneNumberStr]));
+                                            writableStream.write(makeRow([index + 2, "Invalid phone number", phoneNumberStr]));
                                         }
                                     }
                                 } else {
-                                    invalidPhoneRows.push(index + 1);
+                                    invalidPhoneRows.push(index + 2);
                                     if(saveOutput){
-                                        writableStream.write(makeRow([index, "Invalid phone number", phoneNumberStr]));
+                                        writableStream.write(makeRow([index + 2, "Invalid phone number", phoneNumberStr]));
                                     }
                                 }
                             }
