@@ -4,3 +4,4 @@ This is a collection of tools for advanced Klaviyo users. They cover various use
 
 These tools can be run in your browser from Github pages
 
+View on Github pages [here](https://klaviyo-labs.github.io/self-service-toolkit/index.html)
