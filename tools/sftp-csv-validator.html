@@ -1,5 +1,6 @@
 <!DOCTYPE html>
 <html lang="en">
+
 <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -12,15 +13,21 @@
     <script src="https://cdnjs.cloudflare.com/ajax/libs/libphonenumber-js/1.10.50/libphonenumber-js.min.js"></script>
 
 </head>
+
 <body>
     <div class="col-lg-8 mx-auto p-4">
         <header class="d-flex align-items-center pb-3 mb-3 border-bottom">
             <h1>SFTP CSV Validator</h1>
         </header>
         <main class="fs-6">
-            <p>Select a CSV file to validate prior to an SFTP import. This will validate against the required formatting for <a href="https://developers.klaviyo.com/en/docs/sftp_import_tool#event-csv-formatting" target="_blank">event</a> or <a href="https://developers.klaviyo.com/en/docs/sftp_import_tool#profile-csv-formatting" target="_blank">profile</a> imports.</p>
+            <p>Select a CSV file to validate prior to an SFTP import. This will validate against the required formatting
+                for <a href="https://developers.klaviyo.com/en/docs/sftp_import_tool#event-csv-formatting"
+                    target="_blank">event</a> or <a
+                    href="https://developers.klaviyo.com/en/docs/sftp_import_tool#profile-csv-formatting"
+                    target="_blank">profile</a> imports.</p>
 
-            <p>This is most useful when building out an SFTP import workflow and confirming the data structure of the first few files before moving to a scheduled job.</p>
+            <p>This is most useful when building out an SFTP import workflow and confirming the data structure of the
+                first few files before moving to a scheduled job.</p>
 
 
             <p>This validates the following:</p>
@@ -34,7 +41,8 @@
                 <li>Presence of &#65533 character (Unicode replacement character).</li>
             </ul>
 
-            <p>Select a file type (required). Optionally, choose to save line-level validation errors to an output file. Header errors and row numbers for rows with issues will be displayed on this page.</p>
+            <p>Select a file type (required). Optionally, choose to save line-level validation errors to an output file. This is is only available in Chrome.
+                Header errors and row numbers (for the first ten rows) for rows with issues will be displayed on this page.</p>
 
             <hr />
 
@@ -46,11 +54,13 @@
                     <label class="form-label">Select File Type:</label>
                     <div>
                         <div class="form-check form-check-inline">
-                            <input class="form-check-input" type="radio" name="fileType" id="fileTypeEvents" value="events" checked>
+                            <input class="form-check-input" type="radio" name="fileType" id="fileTypeEvents"
+                                value="events" checked>
                             <label class="form-check-label" for="fileTypeEvents">Events</label>
                         </div>
                         <div class="form-check form-check-inline">
-                            <input class="form-check-input" type="radio" name="fileType" id="fileTypeProfiles" value="profiles">
+                            <input class="form-check-input" type="radio" name="fileType" id="fileTypeProfiles"
+                                value="profiles">
                             <label class="form-check-label" for="fileTypeProfiles">Profiles</label>
                         </div>
                     </div>
@@ -66,8 +76,8 @@
                 </div>
             </form>
         </main>
-    
-    
+
+
     </div>
 
 
@@ -83,7 +93,8 @@
         const validateButton = document.getElementById('validateButton');
         const resultsArea = document.getElementById('resultsArea');
         const saveCheckBox = document.getElementById('saveErrors');
-        
+        let writableStream = null;
+        let writer = null;
         let saveOutput;
 
         // --- Header Definitions (ensure they are uppercase for comparison) ---
@@ -92,7 +103,7 @@
         const PROFILE_IDENTIFIER_HEADERS = ['EMAIL', 'PHONENUMBER', 'EXTERNALID'];
         const CONSENT_HEADERS = ["EMAIL MARKETING CONSENT", "SMS MARKETING CONSENT", "SMS TRANSACTIONAL CONSENT"];
         const CONSENT_TIMESTAMP_HEADERS = CONSENT_HEADERS.map((header) => `${header} TIMESTAMP`);
-        const CONSENT_VALUES = ["SUBSCRIBE", "UNSUBSCRIBED", "NEVER SUBSCRIBED"]
+        const CONSENT_VALUES = ["SUBSCRIBE", "UNSUBSCRIBED", "NEVER SUBSCRIBED"];
 
         /**
          * Appends a message to the results area with appropriate Bootstrap alert styling.
@@ -102,7 +113,7 @@
         function logMessage(text, type = 'info') {
             const messageDiv = document.createElement('div');
             let alertClass = 'alert-info'; // Default Bootstrap alert type
-            switch(type) {
+            switch (type) {
                 case 'success': alertClass = 'alert-success'; break;
                 case 'error': alertClass = 'alert-danger'; break; // Bootstrap uses 'danger' for errors
                 case 'warning': alertClass = 'alert-warning'; break;
@@ -111,7 +122,7 @@
             messageDiv.className = `alert ${alertClass} mt-2`;
             messageDiv.setAttribute('role', 'alert');
             messageDiv.textContent = text;
-            
+
             resultsArea.appendChild(messageDiv);
         }
 
@@ -151,349 +162,307 @@
             const regex = /\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,7}\b/;
             return regex.test(emailString);
         }
-
+       
         /**
-         * Main validation function.
-         * @param {string} csvContent - The content of the CSV file.
+         * Main validation function, rewritten for streaming using a two-step process.
+         * @param {File} csvFile - The file object to be parsed by Papa Parse.
          * @param {'events' | 'profiles'} fileType - The type of file being validated.
          */
-        async function performValidation(csvContent, fileType) {
+        function performValidation(csvFile, fileType) {
             resultsArea.innerHTML = '<h2>Results</h2>'; // Clear previous results
-            
-            validateButton.disabled = true; // Disable button during processing
+            validateButton.disabled = true;
+            logMessage(`Starting validation for ${csvFile.name}.`, 'info');
 
-            setTimeout(async() => {
-                let writableStream = null;
-                try {
-
-                    const parseResult = Papa.parse(csvContent, {
-                        header: true,
-                        skipEmptyLines: true,
-                        transformHeader: header => header.toUpperCase(),
-                        dynamicTyping: false,
-                    });
-
-                    const readerList = parseResult.data;
-                    const readerFieldnames = parseResult.meta.fields;
-
-                    if (parseResult.errors.length > 0) {
-                        parseResult.errors.forEach(err => logMessage(`CSV Parsing Warning: ${err.message} (Row: ${err.row + 1})`, 'warning'));
-                    }
-
-                    if (readerList.length === 0) {
-                        logMessage("The CSV file is empty or contains only a header row.", 'info');
+            Papa.parse(csvFile.slice(0, 1024 * 10), { // Parse only the first 10KB
+                header: true,
+                complete: function (headerResults) {
+                    const headers = headerResults.meta.fields.map(h => h.toUpperCase());
+                    if (!headers || headers.length === 0) {
+                        logMessage('Could not find a valid header row in the file.', 'error');
                         validateButton.disabled = false;
                         return;
                     }
+                    logMessage(`Detected Headers: ${headers.join(', ')}`, 'info');
 
-                    if(saveOutput){
-                        const fileHandle = await window.showSaveFilePicker({
-                            suggestedName: `sftp_validator_errors.csv`,
-                            types: [{ description: 'CSV files', accept: { 'text/csv': ['.csv'] } }],
-                            startIn: "desktop"
-                        });
-                        writableStream = await fileHandle.createWritable();
-                        await writableStream.write(makeRow(["Row", "Error", "Value"]));
-                    }
-                    
-                    logMessage(`Found ${readerList.length} data rows to validate.`, 'info');
-                    let validationPassed = true;
-
-                    let missingRequiredHeaders = [];
-                    let missingIdentifiers = false;
-                    
-                    let unicodeReplacementRows = [];
-                    
+                    // --- Perform all header validations now ---
+                    let headerValidationPassed = true;
                     if (fileType === 'events') {
-                        for (const header of EVENT_REQUIRED_HEADERS) {
-                            if (!readerFieldnames.includes(header)) {
-                                missingRequiredHeaders.push(header);
-                            }
+                        const missingRequired = EVENT_REQUIRED_HEADERS.filter(h => !headers.includes(h));
+                        if (missingRequired.length > 0) {
+                            logMessage(`Missing required columns: ${missingRequired.join(', ')}`, 'error');
+                            headerValidationPassed = false;
                         }
-                        if (!EVENT_IDENTIFIERS_HEADERS.some(item => readerFieldnames.includes(item))) {
-                            missingIdentifiers = true;
+                        if (!EVENT_IDENTIFIERS_HEADERS.some(h => headers.includes(h))) {
+                            logMessage(`Missing one of the following identifier columns: ${EVENT_IDENTIFIERS_HEADERS.join(', ')}`, 'error');
+                            headerValidationPassed = false;
                         }
-
-                        if (missingRequiredHeaders.length > 0 || missingIdentifiers) {
-                            if (missingRequiredHeaders.length > 0) {
-                                logMessage(`Missing required columns: ${missingRequiredHeaders.join(', ')}`, 'error');
-                            }
-                            if (missingIdentifiers) {
-                                logMessage(`Missing one of the following identifier columns: ${EVENT_IDENTIFIERS_HEADERS.join(', ')}`, 'error');
-                            }
-                            validationPassed = false;
-                        } else {
-                            logMessage('Required event headers and identifiers are present.', 'success');
-                        }
-                        
-                        const invalidTimeRows = [];
-                        
-                        readerList.forEach(async(row, index) => {
-                            const timeValue = row['TIME'];
-                            if (timeValue === undefined || timeValue === null || timeValue.trim() === '' || !validateTime(timeValue)) {
-                                invalidTimeRows.push(index + 2);
-                                if(saveOutput){
-                                    await writableStream.write(makeRow([index + 2, "Invalid time format", timeValue]));
-                                }
-                            }
-                            
-                            if (Object.values(row).join(",").includes("\uFFFD")){
-                                unicodeReplacementRows.push(index + 2);
-                                if(saveOutput){
-                                    await writableStream.write(makeRow([index + 2, "Unicode replacement character found"]));
-                                }
-                            }
-                            
-                        });
-
-                        if (invalidTimeRows.length > 0) {
-                            if (invalidTimeRows.length === readerList.length) {
-                                logMessage('All rows have an invalid time format in column TIME', 'error');
-                            } else {
-                                logMessage(`Invalid time in the following rows: ${invalidTimeRows.join(', ')} (column TIME)`, 'error');
-                            }
-                            validationPassed = false;
-                        } else if (readerList.some(row => row['TIME'] && row['TIME'].trim() !== '')) {
-                             logMessage('All rows with data have a valid time format in column TIME', 'success');
-                        } else {
-                            logMessage('TIME column has no data to validate or all entries are empty.', 'info');
-                        }
-
                     } else if (fileType === 'profiles') {
-                        let hasConsentHeaders = false;
-                        let hasConsentHeadersTimestamp = false;
-
-                        if (!PROFILE_IDENTIFIER_HEADERS.some(item => readerFieldnames.includes(item))) {
-                            missingIdentifiers = true;
-                        }
-                        if (missingIdentifiers) {
+                        if (!PROFILE_IDENTIFIER_HEADERS.some(h => headers.includes(h))) {
                             logMessage(`Missing one of the following identifier columns: ${PROFILE_IDENTIFIER_HEADERS.join(', ')}`, 'error');
-                            validationPassed = false;
-                        } else {
-                             logMessage('Required profile identifiers are present.', 'success');
-                        }
-
-                        if (CONSENT_HEADERS.some(item => readerFieldnames.includes(item))) {
-                            hasConsentHeaders = true;
-                        }
-                        if (CONSENT_TIMESTAMP_HEADERS.some(item => readerFieldnames.includes(item))) {
-                            hasConsentHeadersTimestamp = true;
-                        }
-                        const invalidConsentValueRows = [];
-                        const invalidConsentTimestampRows = [];
-                        
-                        readerList.forEach(async(row, index) => {
-                        
-                            if (hasConsentHeaders || hasConsentHeadersTimestamp){
-                                let consentValues = CONSENT_HEADERS.map(key => {
-                                    return row.hasOwnProperty(key) ? row[key] : "";
-                                });
-                                consentValues = consentValues.filter(n => n);
-                                if (!consentValues.every(async item => CONSENT_VALUES.includes(item))){
-                                    invalidConsentValueRows.push(index + 2);
-                                    if(saveOutput){
-                                        await writableStream.write(makeRow([index + 2, "Invalid consent value"]));
-                                    } 
-                                }
-                                
-                                let consentTimestamps = CONSENT_TIMESTAMP_HEADERS.map(key => {
-                                    return row.hasOwnProperty(key) ? row[key] : "";
-                                });
-                                consentTimestamps = consentTimestamps.filter(n => n);
-                                consentTimestamps.forEach(async (timeValue) => {
-                                    if (!validateTime(timeValue)){
-                                        invalidConsentTimestampRows.push(index + 2);
-                                        if(saveOutput){
-                                            await writableStream.write(makeRow([index + 2, "Invalid consent timestamp format", timeValue]));
-                                        } 
-                                    }
-                                });
-                            }
-                            if (Object.values(row).join(",").includes("\uFFFD")){
-                                unicodeReplacementRows.push(index + 2);
-                                if(saveOutput){
-                                    await writableStream.write(makeRow([index + 2, "Unicode replacement character found"]));
-                                }
-                            }
-                        });                        
-
-                        if (invalidConsentValueRows.length > 0) {
-                            if (invalidConsentValueRows.length === readerList.length) {
-                                logMessage('All rows have an invalid consent value', 'error');
-                            } else {
-                                logMessage(`Invalid consent value(s) in the following rows: ${invalidConsentValueRows.join(', ')}`, 'error');
-                            }
-                            validationPassed = false;
-                        }
-                        if (invalidConsentTimestampRows.length > 0) {
-                            if (invalidConsentTimestampRows.length === readerList.length) {
-                                logMessage('All rows have an invalid consent timestamp format', 'error');
-                            } else {
-                                logMessage(`Invalid consent timestamp formats in the following rows: ${invalidConsentValueRows.join(', ')}`, 'error');
-                            }
-                            validationPassed = false;
+                            headerValidationPassed = false;
                         }
                     }
 
-                    let emailHeader = null;
-                    if (readerFieldnames.includes('EMAIL')) emailHeader = 'EMAIL';
-                    else if (readerFieldnames.includes('PROFILE.EMAIL')) emailHeader = 'PROFILE.EMAIL';
-
-                    if (emailHeader) {
-                        const invalidEmailRows = [];
-                        let processedEmailCount = 0;
-                        readerList.forEach((row, index) => {
-                            const email = row[emailHeader];
-                            if (email && email.trim() !== '') {
-                                processedEmailCount++;
-                                if (!validateEmail(email)) {
-                                    invalidEmailRows.push(index + 2);
-                                    if(saveOutput){
-                                        writableStream.write(makeRow([index + 2, "Invalid email", email]));
-                                    }
-                                }
-                            }
-                        });
-
-                        if (invalidEmailRows.length > 0) {
-                            if (invalidEmailRows.length === processedEmailCount && processedEmailCount > 0) {
-                                logMessage(`All ${processedEmailCount} non-empty email entries have an invalid format in column ${emailHeader}`, 'error');
-                            } else {
-                                logMessage(`Invalid email format in the following rows: ${invalidEmailRows.join(', ')} (column ${emailHeader})`, 'error');
-                            }
-                            validationPassed = false;
-                        } else if (processedEmailCount > 0) {
-                            logMessage(`All ${processedEmailCount} non-empty email addresses are validly formatted in column ${emailHeader}`, 'success');
-                        } else {
-                            logMessage(`No email addresses to validate in column ${emailHeader}.`, 'warning');
-                        }
-                    } else {
-                        logMessage('No standard email column (EMAIL or PROFILE.EMAIL) found. If other identifiers present, this is not an issue.', 'warning');
+                    if (!headerValidationPassed) {
+                        logMessage('Header validation failed.', 'error');
+                    }else{
+                        logMessage('Header validation passed.', 'success');
                     }
-
-
-                    if (unicodeReplacementRows.length > 0) {
-                        if (unicodeReplacementRows.length.length === readerList.length) {
-                            logMessage(`All rows contain character \uFFFD`, 'error');
-                        } else {
-                            logMessage(`Character \uFFFD found in the following rows: ${unicodeReplacementRows.join(', ')}`, 'error');
-                        }
-                        validationPassed = false;
-                    }
-
-                    let phoneHeader = null;
-                    if (readerFieldnames.includes('PHONENUMBER')) phoneHeader = 'PHONENUMBER';
-                    else if (readerFieldnames.includes('PROFILE.PHONENUMBER')) phoneHeader = 'PROFILE.PHONENUMBER';
-
-                    if (phoneHeader) {
-                        const invalidPhoneRows = [];
-                        let processedPhoneCount = 0;
-                        readerList.forEach((row, index) => {
-                            const phoneNumberStr = row[phoneHeader];
-                            if (phoneNumberStr && phoneNumberStr.trim() !== '') {
-                                processedPhoneCount++;
-                                let parsedNumber = null;
-                                try {
-                                    parsedNumber = libphonenumber.parsePhoneNumberFromString(phoneNumberStr);
-                                } catch (e) {
-                                    invalidPhoneRows.push(index + 2);
-                                    if(saveOutput){
-                                        writableStream.write(makeRow([index + 2, "Invalid phone number", phoneNumberStr]));
-                                    }
-                                    return; 
-                                }
-
-                                if (parsedNumber) {
-                                    if (!parsedNumber.isValid()) {
-                                        invalidPhoneRows.push(index + 2);
-                                        if(saveOutput){
-                                            writableStream.write(makeRow([index + 2, "Invalid phone number", phoneNumberStr]));
-                                        }
-                                    }
-                                } else {
-                                    invalidPhoneRows.push(index + 2);
-                                    if(saveOutput){
-                                        writableStream.write(makeRow([index + 2, "Invalid phone number", phoneNumberStr]));
-                                    }
-                                }
-                            }
-                        });
-
-                        if (invalidPhoneRows.length > 0) {
-                            if (invalidPhoneRows.length === processedPhoneCount && processedPhoneCount > 0) {
-                                logMessage(`All ${processedPhoneCount} non-empty phone entries have an invalid format in column ${phoneHeader}`, 'error');
-                            } else {
-                                logMessage(`Invalid phone format in the following rows: ${invalidPhoneRows.join(', ')} (column ${phoneHeader})`, 'error');
-                            }
-                            validationPassed = false;
-                        } else if (processedPhoneCount > 0) {
-                            logMessage(`All ${processedPhoneCount} non-empty phone numbers are validly formatted in column ${phoneHeader}`, 'success');
-                        } else {
-                            logMessage(`No phone numbers to validate in column ${phoneHeader}.`, 'info');
-                        }
-                    } else {
-                         logMessage('No standard phone column (PHONENUMBER or PROFILE.PHONENUMBER) found. If other identifiers present, this is not an issue.', 'warning');
-                    }
-                    
-                    if(validationPassed && resultsArea.children.length > 1) { 
-                        logMessage("Overall validation: Some checks passed, but see messages above for details.", 'warning');
-                    } else if (validationPassed) {
-                         logMessage("Overall validation: All checks passed successfully!", 'success');
-                    } else {
-                         logMessage("Overall validation: Some checks failed. Please review the messages above.", 'error');
-                    }
-                    if (saveOutput){
-                        await writableStream.close();
-                    }
-
-                } catch (error) {
-                    logMessage(`An unexpected error occurred: ${error.message}`, 'error');
-                    console.error("Validation Error:", error);
-                } finally {
-                    validateButton.disabled = false; // Re-enable button
+                    streamFullFile(csvFile, fileType, headers);
+                },
+                error: function (err) {
+                    logMessage(`A critical error occurred while reading the file header: ${err.message}`, 'error');
+                    validateButton.disabled = false;
                 }
-            }, 50); 
+            });
         }
 
-        function makeRow(listOfData){
-            return (listOfData.join(",")+"\n");
+
+        /**
+         * This function is called after headers are validated.
+         * It streams the entire file and validates each row.
+         * @param {File} csvFile - The full file object.
+         * @param {'events' | 'profiles'} fileType - The type of file.
+         * @param {string[]} headers - The validated list of headers.
+         */
+        function streamFullFile(csvFile, fileType, headers) {
+            // --- Variables for streaming ---
+            let processedRowCount = 0;
+            let lastPercent = 0;
+            let thisPercent = 0;
+            const errorCounts = { time: 0, consentValue: 0, consentTimestamp: 0, email: 0, phone: 0, unicodeReplacement: 0 };
+            const errorSamples = { time: [], consentValue: [], consentTimestamp: [], email: [], phone: [], unicodeReplacement: [] };
+            const MAX_SAMPLES = 10;
+            let outputString = "";
+
+
+            // --- Header values for validation ---
+            const emailHeader = ['EMAIL', 'PROFILE.EMAIL'].find(h => headers.includes(h));
+            const phoneHeader = ['PHONENUMBER', 'PROFILE.PHONENUMBER'].find(h => headers.includes(h));
+            const hasConsentHeaders = CONSENT_HEADERS.some(h => headers.includes(h));
+            const hasConsentHeadersTimestamp = CONSENT_TIMESTAMP_HEADERS.some(h => headers.includes(h));
+
+            // --- Define the error logging helper ---
+            const addError = async (type, value, rowIndex) => {
+                errorCounts[type]++;
+
+                if (errorSamples[type].length < MAX_SAMPLES) {
+                    errorSamples[type].push(rowIndex);
+                }
+                if (saveOutput && writer) {
+                    const totalErrors = Object.values(errorCounts).reduce((sum, currentValue) => {
+                        return sum + currentValue;
+                    }, 0);
+                    outputString += makeRow([rowIndex, `Invalid ${type}`, value]);
+                    if (totalErrors % 1000 == 0){
+                        await writer.ready;
+                        writer.write(outputString);
+                        outputString = "";
+                    }
+                }
+            };
+
+            const messageDiv = document.createElement('div');
+            messageDiv.className = `alert alert-info mt-2`;
+            messageDiv.setAttribute('role', 'alert');
+            messageDiv.innerHTML = 'Validating rows of file. <span id="progressPercent">0%</span> complete.';
+            resultsArea.appendChild(messageDiv);
+
+            Papa.parse(csvFile, {
+                worker: true,
+                header: true,
+                skipEmptyLines: true,
+                step: async function (results, parser) {
+                    processedRowCount++;
+                    const row = keysToUpperCase(results.data);
+                    const rowIndex = processedRowCount + 1;
+                    
+                    // Validate per row depending on file type
+
+                    if (fileType === 'events') {
+                        const timeValue = row['TIME'];
+                        if (!timeValue || !validateTime(String(timeValue))) {
+                            await addError('time', timeValue, rowIndex);
+                        }
+                    } else if (fileType === 'profiles') {
+                        if (hasConsentHeaders) {
+                            for (const key of CONSENT_HEADERS) {
+                                if (row.hasOwnProperty(key) && row[key] && !CONSENT_VALUES.includes(row[key])) {
+                                    await addError('consentValue', row[key], rowIndex);
+                                }
+                            }
+                        }
+                        if (hasConsentHeadersTimestamp) {
+                            for (const key of CONSENT_TIMESTAMP_HEADERS) {
+                                if (row.hasOwnProperty(key) && row[key] && !validateTime(String(row[key]))) {
+                                    await addError('consentTimestamp', row[key], rowIndex);
+                                }
+                            }
+                        }
+                    }
+
+                    if (emailHeader && row[emailHeader] && !validateEmail(row[emailHeader])) {
+                        await addError('email', row[emailHeader], rowIndex);
+                    }
+
+                    if (phoneHeader && row[phoneHeader]) {
+                        try {
+                            const pn = libphonenumber.parsePhoneNumberFromString(String(row[phoneHeader]));
+                            if (!pn || !pn.isValid()) { throw new Error(); }
+                        } catch (e) {
+                            await addError('phone', row[phoneHeader], rowIndex);
+                        }
+                    }
+
+                    if (Object.values(row).join(",").includes("\uFFFD")) {
+                        await addError('unicodeReplacement', '', rowIndex);
+                    }
+                    thisPercent = Math.round((results.meta.cursor/csvFile.size)*100)
+                    if (thisPercent > lastPercent){
+                        console.log(processedRowCount);
+                        document.getElementById("progressPercent").innerHTML = `${thisPercent}%`;
+                        console.log(`${thisPercent}%`);
+                        lastPercent = thisPercent;
+                    }
+                },
+
+                complete: async function () {
+                    let sampleText;
+                    try {
+                        logMessage(`Validation finished. Processed ${processedRowCount.toLocaleString()} data rows.`, 'info');
+
+                        let totalErrorCount = 0;
+                        for (const [errorType, count] of Object.entries(errorCounts)) {
+                            if (count > 0) {
+                                totalErrorCount += count;
+                                if (saveOutput) {
+                                    sampleText = ' See output file for details';
+                                } else {
+                                    if (errorSamples[errorType].length >= MAX_SAMPLES){
+                                        sampleText = ` (see rows: ${errorSamples[errorType].join(', ')}) More than ${MAX_SAMPLES} rows have errors, consider re-running and saving validation errors for more detail`;
+                                    } else {
+                                        sampleText = ` (see rows: ${errorSamples[errorType].join(', ')})`;        
+                                    }
+                                }
+                                logMessage(`Found ${count.toLocaleString()} rows with an invalid ${errorType}${sampleText}.`, 'error');
+                            }
+                        }
+
+                        if (totalErrorCount === 0) {
+                            logMessage("Overall validation: All checks passed successfully!", 'success');
+                        } else {
+                            logMessage("Overall validation: One or more checks failed. Please review the messages above.", 'error');
+                        }
+
+                        if (writer) {
+                            await writer.ready;
+                            writer.write(outputString);
+                            console.log("closing");
+                            await writer.close();
+                        }
+                    } finally {
+                        validateButton.disabled = false;
+                    }
+                },
+
+                error: function (err) {
+                    logMessage(`A critical parsing error occurred: ${err.message}`, 'error');
+                    validateButton.disabled = false;
+                }
+            });
+        } 
+        
+        function keysToUpperCase(obj) {
+            const entries = Object.entries(obj);
+            const newEntries = entries.map(([key, value]) => {
+                return [key.toUpperCase(), value];
+            });
+            return Object.fromEntries(newEntries);
         }
 
-        saveCheckBox.addEventListener('change', async (e) => {
+        function makeRow(listOfData) {
+            // Basic CSV row creation, handles potential commas by quoting
+            const escaped = listOfData.map(item => {
+                const str = String(item || '');
+                if (str.includes(',') || str.includes('"') || str.includes('\n')) {
+                    return `"${str.replace(/"/g, '""')}"`;
+                }
+                return str;
+            });
+            return escaped.join(",") + "\n";
+        }
+
+        /**
+         * Check for common Chromium-based browser identifiers as showSaveFilePicker is only available in Chromium browsers
+         * https://caniuse.com/mdn-api_window_showsavefilepicker
+         */
+
+        function isNonChromium() {
+            
+            const userAgent = navigator.userAgent;
+
+            // Common Chromium-based browser strings:
+            const chromiumStrings = [
+                "Chrome",
+                "Chromium",
+                "Edg", // Edge
+                "Opera",
+                "OPR", // Opera
+                "Vivaldi",
+                "SamsungBrowser",
+                "Silk", // Amazon Silk
+                "Electron", // Electron apps
+                "wv", // Android WebView
+                "Yandex", // Yandex Browser
+            ];
+
+            // Check if any of the chromium strings are present.
+            const isChromium = chromiumStrings.some((str) => userAgent.indexOf(str) !== -1);
+            return !isChromium;
+        }
+
+        window.addEventListener('load', (event) => {
+            if (isNonChromium()) {
+                saveCheckBox.setAttribute("disabled", true);
+                saveCheckBox.parentElement.getElementsByTagName("label")[0].append(" (Available only in Chrome)");
+            }
+        });
+
+        saveCheckBox.addEventListener('change', (e) => {
             saveOutput = e.target.checked;
         });
 
-        validateButton.addEventListener('click', () => {
+        validateButton.addEventListener('click', async() => {
             const file = csvFileInput.files[0];
             const fileTypeRadio = document.querySelector('input[name="fileType"]:checked');
 
-            resultsArea.innerHTML = ''; 
+            resultsArea.innerHTML = ''; // Clear logs on new validation
 
             if (!file) {
                 logMessage('Please select a CSV file.', 'error');
                 return;
             }
             if (!fileTypeRadio) {
-                logMessage('Please select a file type.', 'error'); 
+                logMessage('Please select a file type.', 'error');
                 return;
             }
 
             const fileType = fileTypeRadio.value;
-            const reader = new FileReader();
+            // Directly call performValidation with the file object
+            if(saveOutput){
+                const fileHandle = await window.showSaveFilePicker({
+                    suggestedName: `sftp_validator_errors.csv`,
+                    types: [{ description: 'CSV files', accept: { 'text/csv': ['.csv'] } }],
+                    startIn: "desktop"
+                });
+                writableStream = await fileHandle.createWritable();
+                writer = writableStream.getWriter();
+                writer.write(makeRow(["Row", "Error", "Value"]));
 
-            reader.onload = function(event) {
-                const csvContent = event.target.result;
-                performValidation(csvContent, fileType);
-            };
-
-            reader.onerror = function() {
-                logMessage('Error reading file.', 'error');
-                console.error("FileReader Error:", reader.error);
-                validateButton.disabled = false;
-            };
-
-            reader.readAsText(file);
+            }
+            performValidation(file, fileType);
         });
     </script>
 </body>
+
 </html>
