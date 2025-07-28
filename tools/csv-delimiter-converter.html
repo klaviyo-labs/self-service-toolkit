@@ -1,0 +1,108 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <!-- 
+        Google Tag Manager Config. Used to track usage.
+        Remove or modify if needed.
+    -->
+  <script>(function (w, d, s, l, i) {
+      w[l] = w[l] || []; w[l].push({
+        'gtm.start':
+          new Date().getTime(), event: 'gtm.js'
+      }); var f = d.getElementsByTagName(s)[0],
+        j = d.createElement(s), dl = l != 'dataLayer' ? '&l=' + l : ''; j.async = true; j.src =
+          'https://www.googletagmanager.com/gtm.js?id=' + i + dl; f.parentNode.insertBefore(j, f);
+    })(window, document, 'script', 'dataLayer', 'GTM-NG26NQR7');</script>
+  <!-- End Google Tag Manager -->
+
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta charset="UTF-8">
+  <title>CSV Delimiter Converter</title>
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.6/dist/css/bootstrap.min.css" rel="stylesheet"
+    integrity="sha384-4Q6Gf2aSP4eDXB8Miphtr37CMZZQ5oXLH2yaXMJ2w8e2ZtHTl7GptT4jmndRuHDT" crossorigin="anonymous">
+</head>
+
+<body>
+  <div class="col-lg-8 mx-auto p-4">
+    <header class="d-flex align-items-center pb-3 mb-3 border-bottom">
+      <h1>CSV Delimiter Converter & Checker</h1>
+    </header>
+    <main id="main" class="fs-6">
+      <p>Add a .csv file to check if columns are separated by a semicolon (;) or a comma (,). If the file
+        uses semicolons as a column delimiter, a new comma-separated CSV file will be downloaded.</p>
+      <p>This entirely happens in your browser with JavaScript - nothing is uploaded to any remote
+        servers. You can find the <a
+          href="https://github.com/klaviyo-labs/self-service-toolkit/blob/main/tools/csv-delimiter-converter.html">source
+          code here.</a> Feel free to run locally and modify as needed.</p>
+
+      <p class="alert alert-warning">Note: This tool replaces all semicolons with commas in the converted files.</p>
+
+      
+        <div class="mb-3">
+          <input type="file" id="csvFile" class="form-control" accept=".csv" />
+        </div>
+        <div class="mb-3">
+          <button id="submitButton" class="conversion-element form-control">Check and Convert</button>
+        </div>
+      
+      <p id="status"></p>
+    </main>
+
+
+  </div>
+
+  <script>
+    function processCSV() {
+      const fileInput = document.getElementById('csvFile');
+      const file = fileInput.files[0];
+      const status = document.getElementById('status');
+
+      if (!file) {
+        status.textContent = 'Please select a CSV file.'
+        status.style.color = 'red';
+        return;
+      }
+
+      const reader = new FileReader();
+
+      reader.addEventListener('load', function (e) {
+        const fileContents = e.target.result;
+
+        const header = fileContents.split(/\r?\n/)[0];
+        let commaCount = 0;
+        let semicolonCount = 0;
+
+        for (const character of header) {
+          if (character === ',') {
+            commaCount += 1;
+          } else if (character === ';') {
+            semicolonCount += 1;
+          }
+        }
+
+        if (semicolonCount > commaCount) {
+          const convertedText = fileContents.replace(/;/g, ',');
+          status.textContent = 'Detected a semicolon-separated CSV. Converted to comma-separated.';
+
+          const blob = new Blob([convertedText], { type: 'text/csv;charset=utf-8;' });
+          const url = URL.createObjectURL(blob);
+          const a = document.createElement('a');
+          a.href = url;
+          a.download = 'converted.csv';
+          document.body.appendChild(a);
+          a.click();
+          document.body.removeChild(a);
+        } else {
+          status.textContent = 'Original file is comma-separated. No conversion needed.';
+        }
+      });
+
+      reader.readAsText(file);
+    }
+
+    const button = document.getElementById('submitButton');
+    button.addEventListener('click', processCSV);
+  </script>
+</body>
+</html>
