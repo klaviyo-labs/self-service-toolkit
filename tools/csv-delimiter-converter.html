@@ -1,6 +1,17 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
+      <!-- 
+        Google Tag Manager Config. Used to track usage.
+        Remove or modify if needed.
+    -->
+    <script>(function(w,d,s,l,i){w[l]=w[l]||[];w[l].push({'gtm.start':
+    new Date().getTime(),event:'gtm.js'});var f=d.getElementsByTagName(s)[0],
+    j=d.createElement(s),dl=l!='dataLayer'?'&l='+l:'';j.async=true;j.src=
+    'https://www.googletagmanager.com/gtm.js?id='+i+dl;f.parentNode.insertBefore(j,f);
+    })(window,document,'script','dataLayer','GTM-NG26NQR7');</script>
+    <!-- End Google Tag Manager -->
+
   <meta charset="UTF-8">
   <title>CSV Delimiter Converter</title>
   <style>
@@ -59,13 +70,13 @@ button {
 </head>
 <body>
   <div id="container">
-    <h1>CSV Delimiter Checker & Converter</h1>
+    <h1>CSV Delimiter Converter & Checker</h1>
     <p id="description">Add a .csv file to check if columns are separated by a semicolon (;) or a comma (,). If the file uses semicolons as a column delimiter, a new comma-separated CSV file will be downloaded.</p>
     <p id="note"> Note: This app replaces all semicolons with commas in the converted files.</p>
-    <p id="disclaimer">This entirely happens in your browser with JavaScript – nothing is uploaded to any remote servers. You can find the <a href="https://github.com/AlexRodriguez-Klaviyo/CSVDelimiter/blob/main/CSV%20delimiter.html">source code here.</a> Feel free to run locally and modify as needed.</p>
+    <p id="disclaimer">This entirely happens in your browser with JavaScript - nothing is uploaded to any remote servers. You can find the <a href="https://github.com/klaviyo-labs/self-service-toolkit/blob/main/tools/csv-delimiter-converter.html">source code here.</a> Feel free to run locally and modify as needed.</p>
     <input type="file" id="csvFile" accept=".csv" />
     <br>
-    <button id="submitButton">Check and Convert</button>
+    <button id="submitButton" class="conversion-element">Check and Convert</button>
     <p id="status"></p>
   </div>
 
