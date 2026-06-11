@@ -1,0 +1,519 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Klaviyo SFTP Reimport</title>
+  <script src="https://cdn.jsdelivr.net/npm/papaparse@5.4.1/papaparse.min.js"></script>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; }
+    body {
+      font-family: system-ui, -apple-system, sans-serif;
+      max-width: 680px;
+      margin: 48px auto;
+      padding: 0 24px;
+      color: #1a1a1a;
+    }
+    h1 { font-size: 1.35rem; margin: 0 0 6px; }
+    .subtitle { color: #666; margin: 0 0 12px; font-size: 0.95rem; }
+    .instructions {
+      color: #444;
+      font-size: 0.9rem;
+      margin: 0 0 32px;
+      padding-left: 20px;
+      line-height: 1.7;
+    }
+
+    .field {
+      margin-bottom: 24px;
+    }
+    .field label {
+      display: block;
+      font-size: 0.875rem;
+      font-weight: 600;
+      margin-bottom: 6px;
+    }
+    .field .required { color: #c00; }
+    .field input[type=text] {
+      width: 100%;
+      padding: 9px 12px;
+      border: 1px solid #ccc;
+      border-radius: 6px;
+      font-size: 0.9rem;
+      outline: none;
+      transition: border-color 0.15s;
+    }
+    .field input[type=text]:focus { border-color: #0057ff; }
+    .field input[type=text].invalid { border-color: #e05252; }
+    .field .hint {
+      margin-top: 5px;
+      font-size: 0.78rem;
+      color: #888;
+    }
+
+    .step-label {
+      font-size: 0.75rem;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      color: #888;
+      margin-bottom: 6px;
+    }
+
+    .drop-zone {
+      border: 2px dashed #ccc;
+      border-radius: 8px;
+      padding: 36px 32px;
+      text-align: center;
+      cursor: pointer;
+      transition: border-color 0.15s, background 0.15s;
+      margin-bottom: 20px;
+    }
+    .drop-zone.drag-over { border-color: #0057ff; background: #f0f4ff; }
+    .drop-zone.loaded    { border-color: #5cb87a; background: #edfaf1; }
+    .drop-zone input[type=file] { display: none; }
+    .drop-zone strong { font-size: 1rem; }
+    .drop-zone small { display: block; margin-top: 8px; color: #999; font-size: 0.8rem; }
+    .drop-zone .loaded-name { margin-top: 6px; font-size: 0.85rem; color: #2a7a3b; font-weight: 600; }
+
+    .status {
+      display: none;
+      margin-top: 20px;
+      padding: 12px 16px;
+      border-radius: 6px;
+      font-size: 0.9rem;
+    }
+    .status.processing { background: #fffbea; border: 1px solid #e6c84a; }
+    .status.done       { background: #edfaf1; border: 1px solid #5cb87a; }
+    .status.error      { background: #fff0f0; border: 1px solid #e05252; color: #b00; }
+
+    .log {
+      display: none;
+      margin-top: 12px;
+      padding: 12px;
+      background: #f7f7f7;
+      border-radius: 6px;
+      font-size: 0.78rem;
+      font-family: ui-monospace, monospace;
+      max-height: 180px;
+      overflow-y: auto;
+      white-space: pre;
+      color: #444;
+    }
+
+    #convertBtn {
+      display: block;
+      width: 100%;
+      margin-top: 8px;
+      padding: 12px;
+      border: none;
+      border-radius: 6px;
+      font-size: 1rem;
+      font-weight: 600;
+      cursor: not-allowed;
+      background: #d0d0d0;
+      color: #888;
+      transition: background 0.15s, color 0.15s;
+    }
+    #convertBtn:not(:disabled) {
+      background: #0057ff;
+      color: #fff;
+      cursor: pointer;
+    }
+    #convertBtn:not(:disabled):hover { background: #0044cc; }
+
+    .downloads {
+      display: none;
+      margin-top: 20px;
+    }
+    .downloads { display: none; flex-wrap: wrap; gap: 10px; }
+    .downloads a {
+      display: inline-block;
+      padding: 10px 20px;
+      background: #0057ff;
+      color: #fff;
+      text-decoration: none;
+      border-radius: 6px;
+      font-size: 0.875rem;
+    }
+    .downloads a:hover { opacity: 0.88; }
+  </style>
+</head>
+<body>
+  <h1>Klaviyo SFTP Reimport</h1>
+  <p class="subtitle">
+    Converts a Klaviyo SFTP export CSV into an import-ready CSV.
+    Emails are matched by <code>profile_id</code> from the segment CSV you provide.
+    Rows with no email match are saved to a separate errors CSV.
+  </p>
+  <ol class="instructions">
+    <li>Use <strong>SFTP Export</strong> to export the desired metric's events from your Klaviyo account.</li>
+    <li>Export a <strong>segment CSV</strong> capturing every profile that has performed this metric over all time.</li>
+    <li>Enter the <strong>Metric Name</strong> below, then upload both files to their respective drop zones.</li>
+    <li>Click <strong>Convert</strong>. Once done, click <strong>Download CSV</strong>. If any rows were skipped, click <strong>Download Errors CSV</strong> to review them.</li>
+    <li>Click <strong>Download Test CSV</strong> to get the first 5 rows, then upload that file to the Klaviyo SFTP server under <strong>Import → Events</strong>. Wait for it to process and verify the events look correct in Klaviyo before continuing.
+      <ul>
+        <li>If something doesn't look right, <a href="https://help.klaviyo.com/hc/en-us/articles/115005076787#section1" target="_blank">delete the metric in Klaviyo</a>, adjust your inputs, and retry the process from step 1.</li>
+      </ul>
+    </li>
+    <li>Once the test looks good, upload the full <strong>Download CSV</strong> file to the Klaviyo SFTP server.</li>
+  </ol>
+  <div style="background:#fff8e1;border:1px solid #f0b429;border-radius:6px;padding:12px 16px;margin-bottom:24px;font-size:0.875rem;color:#7a4f00;">
+    <strong>⚠️ We strongly recommend uploading the test file first.</strong> Importing millions of rows can take a long time — verifying with just 5 rows lets you quickly confirm your metric name, email mapping, and event data all look correct in Klaviyo before committing to the full import.
+  </div>
+
+  <!-- Step 0: Metric Name -->
+  <div class="field">
+    <label for="metricName">Metric Name <span class="required">*</span></label>
+    <input type="text" id="metricName" placeholder="e.g. Placed Order">
+    <div class="hint">Applied to every row in the output as the "Metric Name" column.</div>
+  </div>
+
+  <!-- Step 1: Profile mapping CSV -->
+  <div class="step-label">Step 1 — Profile mapping CSV</div>
+  <div class="drop-zone" id="mappingZone">
+    <input type="file" id="mappingInput" accept=".csv">
+    <label for="mappingInput">
+      <strong>Choose the profile mapping CSV</strong> or drag and drop
+      <small>Required columns: "Email", "Klaviyo ID"</small>
+    </label>
+    <div class="loaded-name" id="mappingLoadedName" style="display:none"></div>
+  </div>
+
+  <!-- Step 2: SFTP export CSV -->
+  <div class="step-label">Step 2 — SFTP export CSV</div>
+  <div class="drop-zone" id="exportZone">
+    <input type="file" id="exportInput" accept=".csv">
+    <label for="exportInput">
+      <strong>Choose the SFTP export CSV</strong> or drag and drop
+      <small>Expects columns: id, metric_id, profile_id, event_properties, datetime, uuid</small>
+    </label>
+  </div>
+
+  <button id="convertBtn" disabled>Convert</button>
+
+  <div class="status" id="status"></div>
+  <div class="log" id="log"></div>
+
+  <div class="downloads" id="downloads">
+    <a id="dlTest" style="background:#2e7d32">Download Test CSV (5 rows)</a>
+    <a id="dlOutput">Download Full CSV</a>
+    <a id="dlErrors" style="background:#c0392b;display:none">Download Errors CSV</a>
+  </div>
+
+  <script>
+    // ── Constants ────────────────────────────────────────────────────────────────
+
+    const SFTP_REQUIRED_FIELDS   = ["id", "metric_id", "profile_id", "event_properties", "datetime", "uuid"];
+    const MAPPING_REQUIRED_FIELDS = ["Email", "Klaviyo ID"];
+
+    // ── Input state ──────────────────────────────────────────────────────────────
+
+    const state = { metricName: false, mappingReady: false, exportFile: null };
+
+    function updateConvertButton() {
+      const ready = state.metricName && state.mappingReady && state.exportFile !== null;
+      document.getElementById("convertBtn").disabled = !ready;
+    }
+
+    // ── Profile mapping state ────────────────────────────────────────────────────
+
+    // Map of profile_id (Klaviyo ID) → email, populated when the mapping CSV is loaded.
+    const profileEmailMap = new Map();
+
+    function validateFields(fields, required, fileName) {
+      const missing = required.filter(r => !fields.includes(r));
+      if (missing.length) {
+        throw `"${fileName}" is missing required column(s): ${missing.map(m => `"${m}"`).join(", ")}.\nFound: ${fields.join(", ")}`;
+      }
+    }
+
+    function loadMappingFile(file) {
+      return new Promise((resolve, reject) => {
+        Papa.parse(file, {
+          header:         true,
+          skipEmptyLines: true,
+          complete(results) {
+            const fields = results.meta.fields || [];
+            try {
+              validateFields(fields, MAPPING_REQUIRED_FIELDS, file.name);
+            } catch (err) {
+              reject(err);
+              return;
+            }
+
+            profileEmailMap.clear();
+            for (const row of results.data) {
+              const pid   = String(row["Klaviyo ID"] ?? "").trim();
+              const email = String(row["Email"] ?? "").trim();
+              if (pid && email) profileEmailMap.set(pid, email);
+            }
+            resolve(profileEmailMap.size);
+          },
+          error(err) { reject(err.message); },
+        });
+      });
+    }
+
+    // ── Helpers ──────────────────────────────────────────────────────────────────
+
+    function getCaseInsensitive(obj, key) {
+      const lower = key.toLowerCase();
+      for (const k of Object.keys(obj)) {
+        if (k.toLowerCase() === lower) return obj[k];
+      }
+      return undefined;
+    }
+
+    function parseEventProperties(row) {
+      const raw = row["event_properties"] ?? "{}";
+      try {
+        const parsed = JSON.parse(typeof raw === "string" ? raw : "{}");
+        return (parsed && typeof parsed === "object" && !Array.isArray(parsed)) ? parsed : {};
+      } catch {
+        return {};
+      }
+    }
+
+    function serialize(val) {
+      if (val == null) return "";
+      if (typeof val === "object") return JSON.stringify(val);
+      return String(val);
+    }
+
+    // ── Transformer ──────────────────────────────────────────────────────────────
+
+    // Returns { outputRow } on success, or { errorRow } if no email is mapped.
+    function transformRow(row, metricName) {
+      const props     = parseEventProperties(row);
+      const profileId = String(row["profile_id"] ?? "").trim();
+      const email     = (profileId && profileEmailMap.get(profileId)) || "";
+
+      if (!email) {
+        return { errorRow: { ...row, _reason: "No email found for profile_id" } };
+      }
+
+      const rawValue = getCaseInsensitive(props, "value");
+      const value = (rawValue !== undefined && rawValue !== "") ? rawValue : 0;
+
+      const eventId =
+        getCaseInsensitive(props, "$event_id") ??
+        row["id"] ??
+        "";
+
+      // Required import columns come first, then all event_properties keys.
+      const outputRow = {
+        "Metric Name":   metricName,
+        "Time":          row["datetime"] ?? "",
+        "Profile.Email": email,
+        "Value":         serialize(value),
+        "Unique ID":     serialize(eventId),
+      };
+
+      for (const [k, v] of Object.entries(props)) {
+        outputRow[k] = serialize(v);
+      }
+
+      return { outputRow };
+    }
+
+    // Convert an array of row objects to a CSV string using PapaParse.
+    function rowsToCSV(rows) {
+      if (!rows.length) return "";
+      const colSet   = new Set();
+      const colOrder = [];
+      for (const row of rows) {
+        for (const k of Object.keys(row)) {
+          if (!colSet.has(k)) { colSet.add(k); colOrder.push(k); }
+        }
+      }
+      return Papa.unparse({
+        fields: colOrder,
+        data:   rows.map((r) => colOrder.map((c) => r[c] ?? "")),
+      });
+    }
+
+    // ── UI helpers ───────────────────────────────────────────────────────────────
+
+    function setStatus(type, msg) {
+      const el = document.getElementById("status");
+      el.className = `status ${type}`;
+      el.textContent = msg;
+      el.style.display = "block";
+    }
+
+    function appendLog(msg) {
+      const el = document.getElementById("log");
+      el.style.display = "block";
+      el.textContent += msg + "\n";
+      el.scrollTop = el.scrollHeight;
+    }
+
+    // ── File handlers ────────────────────────────────────────────────────────────
+
+    async function handleMappingFile(file) {
+      setStatus("processing", `Loading profile mapping from ${file.name}…`);
+      document.getElementById("mappingZone").classList.remove("loaded");
+      document.getElementById("mappingLoadedName").style.display = "none";
+      state.mappingReady = false;
+      updateConvertButton();
+      try {
+        const count = await loadMappingFile(file);
+        document.getElementById("mappingZone").classList.add("loaded");
+        const nameEl = document.getElementById("mappingLoadedName");
+        nameEl.textContent = `✓ ${file.name} — ${count.toLocaleString()} profiles loaded`;
+        nameEl.style.display = "block";
+        setStatus("done", `Profile mapping loaded — ${count.toLocaleString()} entries.`);
+        state.mappingReady = true;
+        updateConvertButton();
+      } catch (err) {
+        setStatus("error", String(err));
+      }
+    }
+
+    async function handleExportFile(file) {
+      document.getElementById("exportZone").classList.remove("loaded");
+      state.exportFile = null;
+      updateConvertButton();
+      setStatus("processing", `Validating ${file.name}…`);
+      try {
+        await new Promise((resolve, reject) => {
+          Papa.parse(file, {
+            header:  true,
+            preview: 1,
+            complete(results) {
+              const fields = results.meta.fields || [];
+              try { validateFields(fields, SFTP_REQUIRED_FIELDS, file.name); resolve(); }
+              catch (err) { reject(err); }
+            },
+            error(err) { reject(err.message); },
+          });
+        });
+        document.getElementById("exportZone").classList.add("loaded");
+        setStatus("done", `${file.name} looks good — click Convert when ready.`);
+        state.exportFile = file;
+        updateConvertButton();
+      } catch (err) {
+        setStatus("error", String(err));
+      }
+    }
+
+    function processExportFile() {
+      const file      = state.exportFile;
+      const metricName = document.getElementById("metricName").value.trim();
+
+      setStatus("processing", `Processing ${file.name}…`);
+      const logEl = document.getElementById("log");
+      logEl.textContent = "";
+      logEl.style.display = "none";
+      document.getElementById("downloads").style.display = "none";
+      document.getElementById("convertBtn").disabled = true;
+
+      let headerValidated = false;
+
+      const outputRows = [];
+      const errorRows  = [];
+      let total = 0;
+
+      Papa.parse(file, {
+        header:         true,
+        skipEmptyLines: true,
+        chunk(results, parser) {
+          if (!headerValidated) {
+            headerValidated = true;
+            const fields = results.meta.fields || [];
+            try {
+              validateFields(fields, SFTP_REQUIRED_FIELDS, file.name);
+            } catch (err) {
+              parser.abort();
+              setStatus("error", String(err));
+              return;
+            }
+            setStatus("processing", `Processing ${file.name}…`);
+          }
+
+          for (const row of results.data) {
+            total++;
+            const result = transformRow(row, metricName);
+            if (result.errorRow) {
+              errorRows.push(result.errorRow);
+            } else {
+              outputRows.push(result.outputRow);
+            }
+          }
+          if (Math.floor(total / 50_000) > Math.floor((total - results.data.length) / 50_000)) {
+            appendLog(`Processed ${total.toLocaleString()} rows…`);
+          }
+        },
+        complete() {
+          appendLog(
+            `Done. ${total.toLocaleString()} input rows → ` +
+            `${outputRows.length.toLocaleString()} output, ` +
+            `${errorRows.length.toLocaleString()} errors (no email match).`
+          );
+
+          const ts  = new Date().toISOString().replace(/[-T:.Z]/g, "").slice(0, 14);
+
+          const dlTest = document.getElementById("dlTest");
+          dlTest.href     = URL.createObjectURL(new Blob([rowsToCSV(outputRows.slice(0, 5))], { type: "text/csv" }));
+          dlTest.download = `sftp_import_TEST_${ts}.csv`;
+
+          const dl  = document.getElementById("dlOutput");
+          dl.href     = URL.createObjectURL(new Blob([rowsToCSV(outputRows)], { type: "text/csv" }));
+          dl.download = `sftp_import_${ts}.csv`;
+
+          const dlErr = document.getElementById("dlErrors");
+          if (errorRows.length > 0) {
+            dlErr.href     = URL.createObjectURL(new Blob([rowsToCSV(errorRows)], { type: "text/csv" }));
+            dlErr.download = `sftp_import_errors_${ts}.csv`;
+            dlErr.style.display = "inline-block";
+          } else {
+            dlErr.style.display = "none";
+          }
+
+          document.getElementById("downloads").style.display = "flex";
+          document.getElementById("convertBtn").disabled = false;
+          let doneMsg = `Complete — ${outputRows.length.toLocaleString()} rows ready.`;
+          if (errorRows.length > 0) doneMsg += ` ${errorRows.length.toLocaleString()} rows had no email match → errors CSV.`;
+          setStatus("done", doneMsg);
+        },
+        error(err) {
+          setStatus("error", `Parse error: ${err.message}`);
+        },
+      });
+    }
+
+    // ── Event wiring ─────────────────────────────────────────────────────────────
+
+    document.getElementById("metricName").addEventListener("input", function () {
+      state.metricName = this.value.trim().length > 0;
+      if (state.metricName) this.classList.remove("invalid");
+      updateConvertButton();
+    });
+
+    document.getElementById("mappingInput").addEventListener("change", (e) => {
+      if (e.target.files[0]) handleMappingFile(e.target.files[0]);
+    });
+
+    document.getElementById("exportInput").addEventListener("change", (e) => {
+      if (e.target.files[0]) handleExportFile(e.target.files[0]);
+    });
+
+    document.getElementById("convertBtn").addEventListener("click", processExportFile);
+
+    function wireDrop(zoneId, handler) {
+      const zone = document.getElementById(zoneId);
+      zone.addEventListener("dragover",  (e) => { e.preventDefault(); zone.classList.add("drag-over"); });
+      zone.addEventListener("dragleave", ()  => zone.classList.remove("drag-over"));
+      zone.addEventListener("drop", (e) => {
+        e.preventDefault();
+        zone.classList.remove("drag-over");
+        if (e.dataTransfer.files[0]) handler(e.dataTransfer.files[0]);
+      });
+    }
+
+    wireDrop("mappingZone", handleMappingFile);
+    wireDrop("exportZone",  handleExportFile);
+  </script>
+</body>
+</html>
