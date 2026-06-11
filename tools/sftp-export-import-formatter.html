@@ -126,6 +126,7 @@
       display: none;
       margin-top: 20px;
     }
+    .downloads { display: none; flex-wrap: wrap; gap: 10px; }
     .downloads a {
       display: inline-block;
       padding: 10px 20px;
@@ -135,7 +136,7 @@
       border-radius: 6px;
       font-size: 0.875rem;
     }
-    .downloads a:hover { background: #0044cc; }
+    .downloads a:hover { opacity: 0.88; }
   </style>
 </head>
 <body>
@@ -149,9 +150,17 @@
     <li>Use <strong>SFTP Export</strong> to export the desired metric's events from your Klaviyo account.</li>
     <li>Export a <strong>segment CSV</strong> capturing every profile that has performed this metric over all time.</li>
     <li>Enter the <strong>Metric Name</strong> below, then upload both files to their respective drop zones.</li>
-    <li>Click <strong>Download CSV</strong> to get the reformatted file. If any rows were skipped, click <strong>Download Errors CSV</strong> to review them.</li>
-    <li>Upload the reformatted CSV to the Klaviyo SFTP server under <strong>Import → Events</strong>.</li>
+    <li>Click <strong>Convert</strong>. Once done, click <strong>Download CSV</strong>. If any rows were skipped, click <strong>Download Errors CSV</strong> to review them.</li>
+    <li>Click <strong>Download Test CSV</strong> to get the first 5 rows, then upload that file to the Klaviyo SFTP server under <strong>Import → Events</strong>. Wait for it to process and verify the events look correct in Klaviyo before continuing.
+      <ul>
+        <li>If something doesn't look right, <a href="https://help.klaviyo.com/hc/en-us/articles/115005076787#section1" target="_blank">delete the metric in Klaviyo</a>, adjust your inputs, and retry the process from step 1.</li>
+      </ul>
+    </li>
+    <li>Once the test looks good, upload the full <strong>Download CSV</strong> file to the Klaviyo SFTP server.</li>
   </ol>
+  <div style="background:#fff8e1;border:1px solid #f0b429;border-radius:6px;padding:12px 16px;margin-bottom:24px;font-size:0.875rem;color:#7a4f00;">
+    <strong>⚠️ We strongly recommend uploading the test file first.</strong> Importing millions of rows can take a long time — verifying with just 5 rows lets you quickly confirm your metric name, email mapping, and event data all look correct in Klaviyo before committing to the full import.
+  </div>
 
   <!-- Step 0: Metric Name -->
   <div class="field">
@@ -181,11 +190,14 @@
     </label>
   </div>
 
+  <button id="convertBtn" disabled>Convert</button>
+
   <div class="status" id="status"></div>
   <div class="log" id="log"></div>
 
   <div class="downloads" id="downloads">
-    <a id="dlOutput">Download CSV</a>
+    <a id="dlTest" style="background:#2e7d32">Download Test CSV (5 rows)</a>
+    <a id="dlOutput">Download Full CSV</a>
     <a id="dlErrors" style="background:#c0392b;display:none">Download Errors CSV</a>
   </div>
 
@@ -194,6 +206,15 @@
 
     const SFTP_REQUIRED_FIELDS   = ["id", "metric_id", "profile_id", "event_properties", "datetime", "uuid"];
     const MAPPING_REQUIRED_FIELDS = ["Email", "Klaviyo ID"];
+
+    // ── Input state ──────────────────────────────────────────────────────────────
+
+    const state = { metricName: false, mappingReady: false, exportFile: null };
+
+    function updateConvertButton() {
+      const ready = state.metricName && state.mappingReady && state.exportFile !== null;
+      document.getElementById("convertBtn").disabled = !ready;
+    }
 
     // ── Profile mapping state ────────────────────────────────────────────────────
 
@@ -272,9 +293,7 @@
         return { errorRow: { ...row, _reason: "No email found for profile_id" } };
       }
 
-      const rawValue =
-        getCaseInsensitive(props, "$value") ??
-        getCaseInsensitive(props, "value");
+      const rawValue = getCaseInsensitive(props, "value");
       const value = (rawValue !== undefined && rawValue !== "") ? rawValue : 0;
 
       const eventId =
@@ -336,6 +355,8 @@
       setStatus("processing", `Loading profile mapping from ${file.name}…`);
       document.getElementById("mappingZone").classList.remove("loaded");
       document.getElementById("mappingLoadedName").style.display = "none";
+      state.mappingReady = false;
+      updateConvertButton();
       try {
         const count = await loadMappingFile(file);
         document.getElementById("mappingZone").classList.add("loaded");
@@ -343,30 +364,51 @@
         nameEl.textContent = `✓ ${file.name} — ${count.toLocaleString()} profiles loaded`;
         nameEl.style.display = "block";
         setStatus("done", `Profile mapping loaded — ${count.toLocaleString()} entries.`);
+        state.mappingReady = true;
+        updateConvertButton();
       } catch (err) {
         setStatus("error", String(err));
       }
     }
 
-    function processExportFile(file) {
-      const metricNameEl = document.getElementById("metricName");
-      const metricName   = metricNameEl.value.trim();
-
-      if (!metricName) {
-        metricNameEl.classList.add("invalid");
-        metricNameEl.focus();
-        setStatus("error", "Please enter a Metric Name before uploading the export file.");
-        return;
-      }
-      metricNameEl.classList.remove("invalid");
-
+    async function handleExportFile(file) {
+      document.getElementById("exportZone").classList.remove("loaded");
+      state.exportFile = null;
+      updateConvertButton();
       setStatus("processing", `Validating ${file.name}…`);
+      try {
+        await new Promise((resolve, reject) => {
+          Papa.parse(file, {
+            header:  true,
+            preview: 1,
+            complete(results) {
+              const fields = results.meta.fields || [];
+              try { validateFields(fields, SFTP_REQUIRED_FIELDS, file.name); resolve(); }
+              catch (err) { reject(err); }
+            },
+            error(err) { reject(err.message); },
+          });
+        });
+        document.getElementById("exportZone").classList.add("loaded");
+        setStatus("done", `${file.name} looks good — click Convert when ready.`);
+        state.exportFile = file;
+        updateConvertButton();
+      } catch (err) {
+        setStatus("error", String(err));
+      }
+    }
+
+    function processExportFile() {
+      const file      = state.exportFile;
+      const metricName = document.getElementById("metricName").value.trim();
+
+      setStatus("processing", `Processing ${file.name}…`);
       const logEl = document.getElementById("log");
       logEl.textContent = "";
       logEl.style.display = "none";
       document.getElementById("downloads").style.display = "none";
+      document.getElementById("convertBtn").disabled = true;
 
-      // Validate headers before processing the full file.
       let headerValidated = false;
 
       const outputRows = [];
@@ -411,6 +453,11 @@
           );
 
           const ts  = new Date().toISOString().replace(/[-T:.Z]/g, "").slice(0, 14);
+
+          const dlTest = document.getElementById("dlTest");
+          dlTest.href     = URL.createObjectURL(new Blob([rowsToCSV(outputRows.slice(0, 5))], { type: "text/csv" }));
+          dlTest.download = `sftp_import_TEST_${ts}.csv`;
+
           const dl  = document.getElementById("dlOutput");
           dl.href     = URL.createObjectURL(new Blob([rowsToCSV(outputRows)], { type: "text/csv" }));
           dl.download = `sftp_import_${ts}.csv`;
@@ -424,7 +471,8 @@
             dlErr.style.display = "none";
           }
 
-          document.getElementById("downloads").style.display = "block";
+          document.getElementById("downloads").style.display = "flex";
+          document.getElementById("convertBtn").disabled = false;
           let doneMsg = `Complete — ${outputRows.length.toLocaleString()} rows ready.`;
           if (errorRows.length > 0) doneMsg += ` ${errorRows.length.toLocaleString()} rows had no email match → errors CSV.`;
           setStatus("done", doneMsg);
@@ -438,7 +486,9 @@
     // ── Event wiring ─────────────────────────────────────────────────────────────
 
     document.getElementById("metricName").addEventListener("input", function () {
-      if (this.value.trim()) this.classList.remove("invalid");
+      state.metricName = this.value.trim().length > 0;
+      if (state.metricName) this.classList.remove("invalid");
+      updateConvertButton();
     });
 
     document.getElementById("mappingInput").addEventListener("change", (e) => {
@@ -446,8 +496,10 @@
     });
 
     document.getElementById("exportInput").addEventListener("change", (e) => {
-      if (e.target.files[0]) processExportFile(e.target.files[0]);
+      if (e.target.files[0]) handleExportFile(e.target.files[0]);
     });
+
+    document.getElementById("convertBtn").addEventListener("click", processExportFile);
 
     function wireDrop(zoneId, handler) {
       const zone = document.getElementById(zoneId);
@@ -461,7 +513,7 @@
     }
 
     wireDrop("mappingZone", handleMappingFile);
-    wireDrop("exportZone",  processExportFile);
+    wireDrop("exportZone",  handleExportFile);
   </script>
 </body>
 </html>
