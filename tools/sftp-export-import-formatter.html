@@ -149,6 +149,9 @@
   <ol class="instructions">
     <li>Use <strong>SFTP Export</strong> to export the desired metric's events from your Klaviyo account.</li>
     <li>Export a <strong>segment CSV</strong> capturing every profile that has performed this metric over all time.</li>
+      <ul>
+        <li>Make sure to select <strong>Email</strong> and <strong>Klaviyo ID</strong> from the segment export screen</li>
+      </ul>
     <li>Enter the <strong>Metric Name</strong> below, then upload both files to their respective drop zones.</li>
     <li>Click <strong>Convert</strong>. Once done, click <strong>Download CSV</strong>. If any rows were skipped, click <strong>Download Errors CSV</strong> to review them.</li>
     <li>Click <strong>Download Test CSV</strong> to get the first 5 rows, then upload that file to the Klaviyo SFTP server under <strong>Import → Events</strong>. Wait for it to process and verify the events look correct in Klaviyo before continuing.
@@ -158,8 +161,11 @@
     </li>
     <li>Once the test looks good, upload the full <strong>Download CSV</strong> file to the Klaviyo SFTP server.</li>
   </ol>
-  <div style="background:#fff8e1;border:1px solid #f0b429;border-radius:6px;padding:12px 16px;margin-bottom:24px;font-size:0.875rem;color:#7a4f00;">
+  <div style="background:#fff8e1;border:1px solid #f0b429;border-radius:6px;padding:12px 16px;margin-bottom:16px;font-size:0.875rem;color:#7a4f00;">
     <strong>⚠️ We strongly recommend uploading the test file first.</strong> Importing millions of rows can take a long time — verifying with just 5 rows lets you quickly confirm your metric name, email mapping, and event data all look correct in Klaviyo before committing to the full import.
+  </div>
+  <div style="background:#f5f5f5;border:1px solid #ddd;border-radius:6px;padding:10px 16px;margin-bottom:24px;font-size:0.85rem;color:#555;">
+    Working with a very large file that won't run in the browser? <a href="sftp-export-import-formatter.py" download style="color:#0057ff;">Download the Python version</a> to run locally — requires Python 3.7+, no extra packages needed.
   </div>
 
   <!-- Step 0: Metric Name -->
@@ -204,8 +210,10 @@
   <script>
     // ── Constants ────────────────────────────────────────────────────────────────
 
-    const SFTP_REQUIRED_FIELDS   = ["id", "metric_id", "profile_id", "event_properties", "datetime", "uuid"];
+    const SFTP_REQUIRED_FIELDS    = ["id", "metric_id", "profile_id", "event_properties", "datetime", "uuid"];
     const MAPPING_REQUIRED_FIELDS = ["Email", "Klaviyo ID"];
+    const MAX_ERROR_SAMPLE        = 1_000;   // rows kept in memory for errors CSV
+    const SCHEMA_SCAN_ROWS        = 10_000;  // rows sampled in Pass 1 to discover prop keys
 
     // ── Input state ──────────────────────────────────────────────────────────────
 
@@ -349,6 +357,41 @@
       el.scrollTop = el.scrollHeight;
     }
 
+    // ── Streaming helpers ────────────────────────────────────────────────────────
+
+    // Pass 1: scan the first SCHEMA_SCAN_ROWS rows to collect event_properties keys.
+    // Uses `preview` so PapaParse stops cleanly without leaving FileReader in a bad state.
+    function collectPropKeys(file) {
+      return new Promise((resolve, reject) => {
+        const keyOrder = [], keySet = new Set();
+        Papa.parse(file, {
+          header:         true,
+          skipEmptyLines: true,
+          preview:        SCHEMA_SCAN_ROWS,
+          complete(results) {
+            for (const row of results.data) {
+              const props = parseEventProperties(row);
+              for (const k of Object.keys(props)) {
+                if (!keySet.has(k)) { keySet.add(k); keyOrder.push(k); }
+              }
+            }
+            resolve(keyOrder);
+          },
+          error(err) { reject(err.message); },
+        });
+      });
+    }
+
+    // Encode a single CSV row without PapaParse (avoids buffering).
+    function csvRow(values) {
+      return values.map(v => {
+        const s = String(v ?? "");
+        return (s.includes(",") || s.includes('"') || s.includes("\n") || s.includes("\r"))
+          ? '"' + s.replace(/"/g, '""') + '"'
+          : s;
+      }).join(",") + "\n";
+    }
+
     // ── File handlers ────────────────────────────────────────────────────────────
 
     async function handleMappingFile(file) {
@@ -398,46 +441,138 @@
       }
     }
 
-    function processExportFile() {
-      const file      = state.exportFile;
-      const metricName = document.getElementById("metricName").value.trim();
+    // ── Streaming conversion (File System Access API) ────────────────────────────
 
-      setStatus("processing", `Processing ${file.name}…`);
-      const logEl = document.getElementById("log");
-      logEl.textContent = "";
-      logEl.style.display = "none";
-      document.getElementById("downloads").style.display = "none";
-      document.getElementById("convertBtn").disabled = true;
+    async function processExportFileStreaming(file, metricName, ts) {
+      // Prompt user to pick a save location — must happen synchronously on the
+      // button click so the browser allows it as a user gesture.
+      let fileHandle;
+      try {
+        fileHandle = await window.showSaveFilePicker({
+          suggestedName: `sftp_import_${ts}.csv`,
+          types: [{ description: "CSV File", accept: { "text/csv": [".csv"] } }],
+        });
+      } catch (e) {
+        if (e.name === "AbortError") return false; // user cancelled
+        throw e;
+      }
 
-      let headerValidated = false;
+      // Reset the full CSV button to neutral state for this run.
+      const dl = document.getElementById("dlOutput");
+      dl.removeAttribute("href");
+      dl.removeAttribute("download");
+      dl.textContent = "Download Full CSV";
+      dl.style.background = "";
+      dl.style.cursor = "";
 
-      const outputRows = [];
-      const errorRows  = [];
-      let total = 0;
+      setStatus("processing", "Pass 1 of 2: scanning column schema…");
+      appendLog("Pass 1: scanning event_properties keys…");
+      const propKeys = await collectPropKeys(file);
+      const columns  = ["Metric Name", "Time", "Profile.Email", "Value", "Unique ID", ...propKeys];
+
+      const writable = await fileHandle.createWritable();
+      const enc      = new TextEncoder();
+      await writable.write(enc.encode(csvRow(columns)));
+
+      setStatus("processing", `Pass 2 of 2: converting ${file.name}…`);
+      appendLog("Pass 2: transforming and writing rows…");
+
+      const testRows = [], errorSample = [];
+      let total = 0, outputCount = 0, errorCount = 0;
+
+      await new Promise((resolve, reject) => {
+        Papa.parse(file, {
+          header: true, skipEmptyLines: true,
+          chunk(results, parser) {
+            parser.pause();
+            (async () => {
+              for (const row of results.data) {
+                total++;
+                const result = transformRow(row, metricName);
+                if (result.errorRow) {
+                  errorCount++;
+                  if (errorSample.length < MAX_ERROR_SAMPLE) errorSample.push(result.errorRow);
+                } else {
+                  outputCount++;
+                  if (testRows.length < 5) testRows.push(result.outputRow);
+                  await writable.write(enc.encode(csvRow(columns.map(c => result.outputRow[c] ?? ""))));
+                }
+              }
+              if (Math.floor(total / 50_000) > Math.floor((total - results.data.length) / 50_000)) {
+                appendLog(`Processed ${total.toLocaleString()} rows…`);
+              }
+              parser.resume();
+            })().catch(err => { parser.abort(); reject(err); });
+          },
+          complete: resolve,
+          error(err) { reject(err.message); },
+        });
+      });
+
+      await writable.close();
+
+      appendLog(
+        `Done. ${total.toLocaleString()} input rows → ` +
+        `${outputCount.toLocaleString()} output, ` +
+        `${errorCount.toLocaleString()} errors (no email match).`
+      );
+
+      // Test CSV (only 5 rows — fine to buffer)
+      const dlTest     = document.getElementById("dlTest");
+      dlTest.href      = URL.createObjectURL(new Blob([rowsToCSV(testRows)], { type: "text/csv" }));
+      dlTest.download  = `sftp_import_TEST_${ts}.csv`;
+
+      // Full CSV — already saved; replace button with confirmation
+      dl.textContent       = `✓ Saved: ${fileHandle.name}`;
+      dl.style.background  = "#2e7d32";
+      dl.style.cursor      = "default";
+
+      // Errors CSV (capped sample)
+      const dlErr = document.getElementById("dlErrors");
+      if (errorCount > 0) {
+        dlErr.href     = URL.createObjectURL(new Blob([rowsToCSV(errorSample)], { type: "text/csv" }));
+        dlErr.download = `sftp_import_errors_${ts}.csv`;
+        const sampleNote = errorCount > MAX_ERROR_SAMPLE ? ` (first ${MAX_ERROR_SAMPLE.toLocaleString()} shown)` : "";
+        dlErr.textContent   = `Download Errors CSV${sampleNote}`;
+        dlErr.style.display = "inline-block";
+      } else {
+        dlErr.style.display = "none";
+      }
+
+      document.getElementById("downloads").style.display = "flex";
+      document.getElementById("convertBtn").disabled = false;
+      let doneMsg = `Complete — ${outputCount.toLocaleString()} rows saved.`;
+      if (errorCount > 0) {
+        doneMsg += ` ${errorCount.toLocaleString()} rows had no email match.`;
+        if (errorCount > MAX_ERROR_SAMPLE) doneMsg += ` Errors CSV contains first ${MAX_ERROR_SAMPLE.toLocaleString()} samples.`;
+      }
+      setStatus("done", doneMsg);
+      return true;
+    }
+
+    // ── Fallback conversion (in-memory, for browsers without File System Access) ─
+
+    function processExportFileFallback(file, metricName, ts) {
+      const outputRows = [], errorSample = [];
+      let total = 0, outputCount = 0, errorCount = 0, headerValidated = false;
 
       Papa.parse(file, {
-        header:         true,
-        skipEmptyLines: true,
+        header: true, skipEmptyLines: true,
         chunk(results, parser) {
           if (!headerValidated) {
             headerValidated = true;
             const fields = results.meta.fields || [];
-            try {
-              validateFields(fields, SFTP_REQUIRED_FIELDS, file.name);
-            } catch (err) {
-              parser.abort();
-              setStatus("error", String(err));
-              return;
-            }
-            setStatus("processing", `Processing ${file.name}…`);
+            try { validateFields(fields, SFTP_REQUIRED_FIELDS, file.name); }
+            catch (err) { parser.abort(); setStatus("error", String(err)); return; }
           }
-
           for (const row of results.data) {
             total++;
             const result = transformRow(row, metricName);
             if (result.errorRow) {
-              errorRows.push(result.errorRow);
+              errorCount++;
+              if (errorSample.length < MAX_ERROR_SAMPLE) errorSample.push(result.errorRow);
             } else {
+              outputCount++;
               outputRows.push(result.outputRow);
             }
           }
@@ -448,24 +583,24 @@
         complete() {
           appendLog(
             `Done. ${total.toLocaleString()} input rows → ` +
-            `${outputRows.length.toLocaleString()} output, ` +
-            `${errorRows.length.toLocaleString()} errors (no email match).`
+            `${outputCount.toLocaleString()} output, ` +
+            `${errorCount.toLocaleString()} errors (no email match).`
           );
 
-          const ts  = new Date().toISOString().replace(/[-T:.Z]/g, "").slice(0, 14);
-
-          const dlTest = document.getElementById("dlTest");
+          const dlTest    = document.getElementById("dlTest");
           dlTest.href     = URL.createObjectURL(new Blob([rowsToCSV(outputRows.slice(0, 5))], { type: "text/csv" }));
           dlTest.download = `sftp_import_TEST_${ts}.csv`;
 
-          const dl  = document.getElementById("dlOutput");
+          const dl    = document.getElementById("dlOutput");
           dl.href     = URL.createObjectURL(new Blob([rowsToCSV(outputRows)], { type: "text/csv" }));
           dl.download = `sftp_import_${ts}.csv`;
 
           const dlErr = document.getElementById("dlErrors");
-          if (errorRows.length > 0) {
-            dlErr.href     = URL.createObjectURL(new Blob([rowsToCSV(errorRows)], { type: "text/csv" }));
+          if (errorCount > 0) {
+            dlErr.href     = URL.createObjectURL(new Blob([rowsToCSV(errorSample)], { type: "text/csv" }));
             dlErr.download = `sftp_import_errors_${ts}.csv`;
+            const sampleNote = errorCount > MAX_ERROR_SAMPLE ? ` (first ${MAX_ERROR_SAMPLE.toLocaleString()} shown)` : "";
+            dlErr.textContent   = `Download Errors CSV${sampleNote}`;
             dlErr.style.display = "inline-block";
           } else {
             dlErr.style.display = "none";
@@ -473,14 +608,44 @@
 
           document.getElementById("downloads").style.display = "flex";
           document.getElementById("convertBtn").disabled = false;
-          let doneMsg = `Complete — ${outputRows.length.toLocaleString()} rows ready.`;
-          if (errorRows.length > 0) doneMsg += ` ${errorRows.length.toLocaleString()} rows had no email match → errors CSV.`;
+          let doneMsg = `Complete — ${outputCount.toLocaleString()} rows ready.`;
+          if (errorCount > 0) {
+            doneMsg += ` ${errorCount.toLocaleString()} rows had no email match.`;
+            if (errorCount > MAX_ERROR_SAMPLE) doneMsg += ` Errors CSV contains first ${MAX_ERROR_SAMPLE.toLocaleString()} samples.`;
+          }
           setStatus("done", doneMsg);
         },
-        error(err) {
-          setStatus("error", `Parse error: ${err.message}`);
-        },
+        error(err) { setStatus("error", `Parse error: ${err.message}`); },
       });
+    }
+
+    // ── Convert dispatcher ───────────────────────────────────────────────────────
+
+    function processExportFile() {
+      const file       = state.exportFile;
+      const metricName = document.getElementById("metricName").value.trim();
+      const ts         = new Date().toISOString().replace(/[-T:.Z]/g, "").slice(0, 14);
+
+      const logEl = document.getElementById("log");
+      logEl.textContent = "";
+      logEl.style.display = "none";
+      document.getElementById("downloads").style.display = "none";
+      document.getElementById("convertBtn").disabled = true;
+
+      if ("showSaveFilePicker" in window) {
+        processExportFileStreaming(file, metricName, ts).then(proceeded => {
+          if (!proceeded) {
+            document.getElementById("convertBtn").disabled = false;
+            setStatus("done", "Cancelled. Click Convert to try again.");
+          }
+        }).catch(err => {
+          setStatus("error", String(err));
+          document.getElementById("convertBtn").disabled = false;
+        });
+      } else {
+        setStatus("processing", `Processing ${file.name}…`);
+        processExportFileFallback(file, metricName, ts);
+      }
     }
 
     // ── Event wiring ─────────────────────────────────────────────────────────────
