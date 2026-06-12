@@ -562,9 +562,16 @@
           if (!headerValidated) {
             headerValidated = true;
             const fields = results.meta.fields || [];
-            try { validateFields(fields, SFTP_REQUIRED_FIELDS, file.name); }
-            catch (err) { parser.abort(); setStatus("error", String(err)); return; }
+            try {
+              validateFields(fields, SFTP_REQUIRED_FIELDS, file.name);
+            } catch (err) {
+              parser.abort();
+              setStatus("error", String(err));
+              return;
+            }
+            setStatus("processing", `Processing ${file.name}…`);
           }
+
           for (const row of results.data) {
             total++;
             const result = transformRow(row, metricName);
@@ -583,24 +590,24 @@
         complete() {
           appendLog(
             `Done. ${total.toLocaleString()} input rows → ` +
-            `${outputCount.toLocaleString()} output, ` +
-            `${errorCount.toLocaleString()} errors (no email match).`
+            `${outputRows.length.toLocaleString()} output, ` +
+            `${errorRows.length.toLocaleString()} errors (no email match).`
           );
 
-          const dlTest    = document.getElementById("dlTest");
+          const ts  = new Date().toISOString().replace(/[-T:.Z]/g, "").slice(0, 14);
+
+          const dlTest = document.getElementById("dlTest");
           dlTest.href     = URL.createObjectURL(new Blob([rowsToCSV(outputRows.slice(0, 5))], { type: "text/csv" }));
           dlTest.download = `sftp_import_TEST_${ts}.csv`;
 
-          const dl    = document.getElementById("dlOutput");
+          const dl  = document.getElementById("dlOutput");
           dl.href     = URL.createObjectURL(new Blob([rowsToCSV(outputRows)], { type: "text/csv" }));
           dl.download = `sftp_import_${ts}.csv`;
 
           const dlErr = document.getElementById("dlErrors");
-          if (errorCount > 0) {
-            dlErr.href     = URL.createObjectURL(new Blob([rowsToCSV(errorSample)], { type: "text/csv" }));
+          if (errorRows.length > 0) {
+            dlErr.href     = URL.createObjectURL(new Blob([rowsToCSV(errorRows)], { type: "text/csv" }));
             dlErr.download = `sftp_import_errors_${ts}.csv`;
-            const sampleNote = errorCount > MAX_ERROR_SAMPLE ? ` (first ${MAX_ERROR_SAMPLE.toLocaleString()} shown)` : "";
-            dlErr.textContent   = `Download Errors CSV${sampleNote}`;
             dlErr.style.display = "inline-block";
           } else {
             dlErr.style.display = "none";
